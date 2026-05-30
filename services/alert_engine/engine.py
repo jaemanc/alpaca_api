@@ -1,108 +1,119 @@
 """
 Alert Engine - 가격 알림 규칙 평가
 
-Kafka market-quotes 토픽에서 시세 데이터를 소비하고,
-Redis에 저장된 사용자 Alert_Rule과 비교하여
-조건 충족 시 ntfy 푸시 알림을 발송한다.
+Kafka에서 시세 소비 → Redis에서 규칙 조회 → 조건 평가 → ntfy 발송
 
-동작 흐름:
-1. Kafka Consumer로 Quote 메시지 수신
-2. Redis에서 해당 종목의 활성 Alert_Rule 조회
-3. 현재가와 조건값 비교
-4. 쿨다운 확인 (중복 알림 방지)
-5. 조건 충족 시 ntfy로 푸시 발송
+Redis 연동:
+- 규칙 조회: get_rules_by_symbol()
+- 쿨다운 확인/설정: is_cooldown_active(), set_cooldown()
+- 시세 캐시: cache_quote()
+
+Redis 미연결 시 인메모리 폴백으로 동작한다.
 """
 
-import time
 import logging
 import json
 from confluent_kafka import Consumer, KafkaError
 
-from shared.config import (
-    KAFKA_BOOTSTRAP_SERVERS,
-    KAFKA_TOPIC_QUOTES,
-    REDIS_HOST,
-    REDIS_PORT,
-    COOLDOWN_PRICE_ALERT,
-)
+from shared.config import KAFKA_BOOTSTRAP_SERVERS, KAFKA_TOPIC_QUOTES
 from shared.models import Quote
 from services.notification.ntfy_sender import send_price_alert
 
 logger = logging.getLogger(__name__)
 
-# 인메모리 쿨다운 저장소 (Redis 없이도 동작하도록)
-# key: rule_id, value: 마지막 알림 발송 시각 (unix timestamp)
-_cooldown_map: dict[str, float] = {}
+# Redis 사용 가능 여부 플래그
+_use_redis = True
+try:
+    from shared.redis_client import (
+        get_rules_by_symbol,
+        is_cooldown_active,
+        set_cooldown,
+        cache_quote,
+        get_redis,
+    )
+    # 연결 테스트
+    get_redis().ping()
+    logger.info("Redis 연결 성공")
+except Exception:
+    _use_redis = False
+    logger.warning("Redis 미연결 — 인메모리 모드로 동작")
+
+# 인메모리 폴백 (Redis 없을 때)
+_memory_rules: dict[str, list[dict]] = {}
+_memory_cooldown: dict[str, float] = {}
 
 
 class AlertEngine:
     """
     가격 알림 엔진
 
-    Kafka에서 Quote를 소비하고, 등록된 규칙과 비교하여 알림을 발송한다.
-    현재는 Redis 없이 인메모리 규칙 저장소를 사용한다.
-    (추후 Redis 연동 시 교체)
+    Kafka Consumer → 규칙 평가 → ntfy 발송
     """
 
     def __init__(self):
-        # 인메모리 규칙 저장소: {symbol: [rule_dict, ...]}
-        self._rules: dict[str, list[dict]] = {}
-
-        # Kafka Consumer 설정
         self._consumer = Consumer({
             "bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS,
             "group.id": "alert-engine",
-            "auto.offset.reset": "latest",  # 최신 메시지부터 소비
+            "auto.offset.reset": "latest",
             "enable.auto.commit": True,
         })
-
-        logger.info("AlertEngine 초기화 완료")
+        logger.info(f"AlertEngine 초기화 (Redis: {'ON' if _use_redis else 'OFF'})")
 
     def add_rule(self, rule: dict):
-        """
-        알림 규칙 등록
-
-        Args:
-            rule: {
-                "rule_id": "...",
-                "symbol": "AAPL",
-                "alert_type": "price_above" | "price_below" | "price_change",
-                "threshold": 190.0,
-                "is_active": True
-            }
-        """
+        """인메모리 규칙 등록 (Redis 미사용 시 또는 초기 설정용)"""
         symbol = rule["symbol"]
-        if symbol not in self._rules:
-            self._rules[symbol] = []
-        self._rules[symbol].append(rule)
+        if symbol not in _memory_rules:
+            _memory_rules[symbol] = []
+        _memory_rules[symbol].append(rule)
         logger.info(f"규칙 등록: {symbol} {rule['alert_type']} @ {rule['threshold']}")
 
+    def _get_rules(self, symbol: str) -> list[dict]:
+        """종목별 활성 규칙 조회 (Redis 우선, 폴백: 인메모리)"""
+        if _use_redis:
+            try:
+                return get_rules_by_symbol(symbol)
+            except Exception:
+                pass
+        return _memory_rules.get(symbol, [])
+
     def _check_cooldown(self, rule_id: str) -> bool:
-        """
-        쿨다운 확인
+        """쿨다운 확인 (True면 억제)"""
+        if _use_redis:
+            try:
+                return is_cooldown_active(rule_id)
+            except Exception:
+                pass
+        # 인메모리 폴백
+        import time
+        last = _memory_cooldown.get(rule_id, 0)
+        return (time.time() - last) < 300
 
-        마지막 알림 발송 후 COOLDOWN_PRICE_ALERT(5분) 이내면 True(억제).
-        """
-        last_sent = _cooldown_map.get(rule_id)
-        if last_sent is None:
-            return False
-        return (time.time() - last_sent) < COOLDOWN_PRICE_ALERT
+    def _set_cooldown(self, rule_id: str):
+        """쿨다운 설정"""
+        if _use_redis:
+            try:
+                set_cooldown(rule_id, "price")
+                return
+            except Exception:
+                pass
+        import time
+        _memory_cooldown[rule_id] = time.time()
 
-    def _evaluate_quote(self, quote: Quote):
-        """
-        Quote 데이터와 규칙 비교
+    def _evaluate(self, quote: Quote):
+        """Quote와 규칙 비교 → 조건 충족 시 알림 발송"""
+        # Redis에 시세 캐시
+        if _use_redis:
+            try:
+                cache_quote(quote.symbol, quote.to_json())
+            except Exception:
+                pass
 
-        해당 종목에 등록된 모든 활성 규칙을 순회하며 조건 충족 여부를 판단한다.
-        """
-        rules = self._rules.get(quote.symbol, [])
+        rules = self._get_rules(quote.symbol)
         if not rules:
             return
 
-        current_price = quote.bid_price  # 매수호가를 현재가로 사용
-
-        # 무효 가격 스킵
-        if current_price <= 0:
-            logger.debug(f"[{quote.symbol}] 무효 가격: {current_price}")
+        price = quote.bid_price
+        if price <= 0:
             return
 
         for rule in rules:
@@ -110,69 +121,54 @@ class AlertEngine:
                 continue
 
             rule_id = rule["rule_id"]
-            alert_type = rule["alert_type"]
-            threshold = rule["threshold"]
-
-            # 쿨다운 중이면 스킵
             if self._check_cooldown(rule_id):
                 continue
 
+            alert_type = rule["alert_type"]
+            threshold = rule["threshold"]
             triggered = False
 
-            if alert_type == "price_above" and current_price >= threshold:
+            if alert_type == "price_above" and price >= threshold:
                 triggered = True
-            elif alert_type == "price_below" and current_price <= threshold:
+            elif alert_type == "price_below" and price <= threshold:
                 triggered = True
             elif alert_type == "price_change":
-                # threshold를 기준가로 사용, 변동률 계산
-                change_pct = abs((current_price - threshold) / threshold * 100)
-                # 변동률이 5% 이상이면 알림 (기본 임계값)
-                if change_pct >= 5.0:
-                    triggered = True
+                if threshold > 0:
+                    change_pct = abs((price - threshold) / threshold * 100)
+                    if change_pct >= 5.0:
+                        triggered = True
 
             if triggered:
-                logger.info(
-                    f"🔔 알림 트리거: {quote.symbol} "
-                    f"${current_price:.2f} ({alert_type} @ {threshold})"
-                )
-                # ntfy 푸시 발송
-                send_price_alert(quote.symbol, current_price, alert_type, threshold)
-                # 쿨다운 기록
-                _cooldown_map[rule_id] = time.time()
+                logger.info(f"ALERT: {quote.symbol} ${price:.2f} ({alert_type} @ {threshold})")
+                send_price_alert(quote.symbol, price, alert_type, threshold)
+                self._set_cooldown(rule_id)
 
     def run(self):
-        """
-        Kafka Consumer 루프 시작 (블로킹)
-
-        market-quotes 토픽을 구독하고, 수신된 Quote마다 규칙을 평가한다.
-        """
+        """Kafka Consumer 루프 (블로킹)"""
         self._consumer.subscribe([KAFKA_TOPIC_QUOTES])
         logger.info(f"Kafka 소비 시작: {KAFKA_TOPIC_QUOTES}")
 
         try:
             while True:
-                msg = self._consumer.poll(1.0)  # 1초 대기
-
+                msg = self._consumer.poll(1.0)
                 if msg is None:
                     continue
                 if msg.error():
                     if msg.error().code() == KafkaError._PARTITION_EOF:
                         continue
-                    logger.error(f"Kafka 오류: {msg.error()}")
+                    logger.error(f"Kafka: {msg.error()}")
                     continue
 
-                # 메시지 역직렬화
                 try:
                     quote = Quote.from_json(msg.value().decode("utf-8"))
-                    self._evaluate_quote(quote)
+                    self._evaluate(quote)
                 except Exception as e:
-                    logger.error(f"메시지 파싱 오류: {e}")
+                    logger.error(f"파싱 오류: {e}")
 
         except KeyboardInterrupt:
-            logger.info("Alert Engine 종료")
+            logger.info("종료")
         finally:
             self._consumer.close()
 
     def stop(self):
-        """Consumer 종료"""
         self._consumer.close()
