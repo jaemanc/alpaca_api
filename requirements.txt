@@ -1,0 +1,12 @@
+# Alpaca API 연결
+alpaca-py==0.28.1
+python-dotenv==1.0.1
+
+# Kafka
+confluent-kafka==2.6.1
+
+# Redis (4단계에서 사용)
+redis==5.2.1
+
+# 알림 발송
+requests>=2.31.0
