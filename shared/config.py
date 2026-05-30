@@ -13,8 +13,13 @@ load_dotenv()
 ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
 ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 
-# 구독 종목 (쉼표 구분)
-WATCH_SYMBOLS = os.getenv("WATCH_SYMBOLS", "AAPL,TSLA,NVDA").split(",")
+# 구독 종목 (환경변수 설정 시 해당 값 사용, 없으면 symbols.py의 300개 전체)
+_env_symbols = os.getenv("WATCH_SYMBOLS", "")
+if _env_symbols:
+    WATCH_SYMBOLS = _env_symbols.split(",")
+else:
+    from shared.symbols import ALL_SYMBOLS
+    WATCH_SYMBOLS = ALL_SYMBOLS
 
 # Kafka
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
