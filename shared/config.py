@@ -31,8 +31,13 @@ REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 
 # 쿨다운 (초)
-COOLDOWN_PRICE_ALERT = 300   # 가격 알림: 5분
+COOLDOWN_PRICE_ALERT = 300   # 규칙별 쿨다운: 5분
 COOLDOWN_OB_ALERT = 60       # 호가 알림: 60초
+COOLDOWN_SYMBOL = 3600       # 종목별 쿨다운: 1시간 (같은 종목 최대 1건/시간)
+
+# 알림 레이트 리밋
+RATE_LIMIT_PER_MINUTE = 5    # 분당 최대 알림 수
+DAILY_ALERT_LIMIT = 100      # 일일 최대 알림 수
 
 # ntfy 푸시 알림
 NTFY_TOPIC_URL = os.getenv("NTFY_TOPIC_URL", "https://ntfy.sh/GirinDev")

@@ -16,6 +16,9 @@ from shared.config import (
     REDIS_PORT,
     COOLDOWN_PRICE_ALERT,
     COOLDOWN_OB_ALERT,
+    COOLDOWN_SYMBOL,
+    RATE_LIMIT_PER_MINUTE,
+    DAILY_ALERT_LIMIT,
 )
 
 logger = logging.getLogger(__name__)
@@ -65,6 +68,97 @@ def set_cooldown(rule_id: str, alert_type: str = "price"):
     r = get_redis()
     ttl = COOLDOWN_PRICE_ALERT if alert_type == "price" else COOLDOWN_OB_ALERT
     r.setex(f"cooldown:{rule_id}", ttl, "1")
+
+
+# ============================================================
+# 종목별 쿨다운 (같은 종목 1시간에 최대 1건)
+# ============================================================
+
+def is_symbol_cooldown_active(symbol: str) -> bool:
+    """종목별 쿨다운 확인 (1시간 내 이미 알림 발송했으면 True)"""
+    r = get_redis()
+    return r.exists(f"cooldown:symbol:{symbol}") > 0
+
+
+def set_symbol_cooldown(symbol: str):
+    """종목별 쿨다운 설정 (1시간 TTL)"""
+    r = get_redis()
+    r.setex(f"cooldown:symbol:{symbol}", COOLDOWN_SYMBOL, "1")
+
+
+# ============================================================
+# 글로벌 레이트 리밋 (분당 최대 N건)
+# ============================================================
+
+def check_rate_limit() -> bool:
+    """
+    분당 레이트 리밋 확인
+
+    Returns:
+        True면 발송 가능, False면 한도 초과
+    """
+    r = get_redis()
+    key = "ratelimit:global"
+    count = r.get(key)
+
+    if count is None:
+        # 첫 알림: 카운터 시작 (60초 TTL)
+        r.setex(key, 60, 1)
+        return True
+
+    if int(count) >= RATE_LIMIT_PER_MINUTE:
+        return False
+
+    r.incr(key)
+    return True
+
+
+# ============================================================
+# 일일 한도 (하루 최대 N건)
+# ============================================================
+
+def check_daily_limit(user_id: str = "default") -> bool:
+    """
+    일일 알림 한도 확인
+
+    Returns:
+        True면 발송 가능, False면 일일 한도 초과
+    """
+    from datetime import datetime, timezone
+    r = get_redis()
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    key = f"daily:{user_id}:{today}"
+
+    count = r.get(key)
+
+    if count is None:
+        # 오늘 첫 알림: 카운터 시작 (자정까지 TTL)
+        r.setex(key, _seconds_until_midnight(), 1)
+        return True
+
+    if int(count) >= DAILY_ALERT_LIMIT:
+        return False
+
+    r.incr(key)
+    return True
+
+
+def get_daily_count(user_id: str = "default") -> int:
+    """오늘 발송된 알림 수 조회"""
+    from datetime import datetime, timezone
+    r = get_redis()
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    key = f"daily:{user_id}:{today}"
+    count = r.get(key)
+    return int(count) if count else 0
+
+
+def _seconds_until_midnight() -> int:
+    """자정(UTC)까지 남은 초"""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    midnight = now.replace(hour=23, minute=59, second=59)
+    return max(1, int((midnight - now).total_seconds()))
 
 
 # ============================================================
