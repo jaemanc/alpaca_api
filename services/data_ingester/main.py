@@ -63,7 +63,7 @@ def send_startup_notification():
             mid = (bid + ask) / 2 if ask > 0 else bid
             lines.append(f"{sym}: ${mid:.2f}")
 
-        lines.append(f"\nKafka: {KAFKA_BOOTSTRAP_SERVERS}")
+        lines.append("")
 
         message = "\n".join(lines)
         send_push(
