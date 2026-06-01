@@ -108,6 +108,7 @@ def run_session():
     하나의 거래 세션 실행
 
     WebSocket 연결 → 폐장까지 수신 → 연결 해제
+    1시간마다 헬스체크 알림 발송.
     """
     global quote_count
     quote_count = 0
@@ -129,6 +130,28 @@ def run_session():
 
     timer = threading.Thread(target=close_timer, daemon=True)
     timer.start()
+
+    # 1시간마다 헬스체크 알림 발송
+    def healthcheck_loop():
+        import time
+        while not _shutdown:
+            time.sleep(3600)  # 1시간 대기
+            if _shutdown:
+                break
+            try:
+                et_now = now_et().strftime("%H:%M ET")
+                send_push(
+                    message=f"Running OK | {quote_count} quotes processed\nTime: {et_now}",
+                    title="Stock Alert - Health Check",
+                    tags="green_heart,heartbeat",
+                    priority=1,
+                )
+                logger.info(f"헬스체크 발송: {quote_count}건 처리 중")
+            except Exception:
+                pass
+
+    hc_thread = threading.Thread(target=healthcheck_loop, daemon=True)
+    hc_thread.start()
 
     # WebSocket 시작 (블로킹 — 폐장 타이머가 stop() 호출하면 반환됨)
     ingester.start()
