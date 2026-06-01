@@ -45,25 +45,36 @@ _shutdown = False
 
 
 def send_startup_notification():
-    """시작 알림 — 주요 종목 최신 가격 포함"""
+    """시작 알림 — 전체 종목 최신 가격 + 전일 대비 등락 표시"""
     try:
         from alpaca.data.historical import StockHistoricalDataClient
-        from alpaca.data.requests import StockLatestQuoteRequest
+        from alpaca.data.requests import StockSnapshotRequest
+        from datetime import datetime
 
         client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
-        top_symbols = WATCH_SYMBOLS[:5]
-        request = StockLatestQuoteRequest(symbol_or_symbols=top_symbols)
-        quotes = client.get_stock_latest_quote(request)
 
-        from datetime import datetime
+        # Snapshot API: 최신 호가 + 전일 종가를 한 번에 조회
+        request = StockSnapshotRequest(symbol_or_symbols=WATCH_SYMBOLS, feed="iex")
+        snapshots = client.get_stock_snapshot(request)
+
         now = datetime.now().strftime("%m/%d %H:%M")
-        lines = [f"System started at {now}", f"Watching {len(WATCH_SYMBOLS)} symbols", ""]
+        lines = [f"Started {now} | {len(WATCH_SYMBOLS)} symbols", ""]
 
-        for sym, q in quotes.items():
-            bid = q.bid_price if q.bid_price else 0
-            ask = q.ask_price if q.ask_price else 0
-            mid = (bid + ask) / 2 if ask > 0 else bid
-            lines.append(f"{sym}: ${mid:.2f}")
+        for sym, snap in snapshots.items():
+            # 현재가 (최신 호가의 bid)
+            price = float(snap.latest_quote.bid_price) if snap.latest_quote and snap.latest_quote.bid_price else 0
+            if price <= 0:
+                continue
+
+            # 전일 종가
+            prev = float(snap.previous_daily_bar.close) if snap.previous_daily_bar else 0
+
+            if prev > 0:
+                change = ((price - prev) / prev) * 100
+                arrow = "▲" if change >= 0 else "▼"
+                lines.append(f"{sym} ${price:.2f} {arrow}{abs(change):.1f}%")
+            else:
+                lines.append(f"{sym} ${price:.2f}")
 
         send_push(
             message="\n".join(lines),
