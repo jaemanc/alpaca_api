@@ -45,41 +45,48 @@ _shutdown = False
 
 
 def send_startup_notification():
-    """시작 알림 — 전체 종목 최신 가격 + 전일 대비 등락 표시"""
+    """시작 알림 — 변동성 상위 15종목, 한글 이름, 한 줄에 2개"""
     try:
         from alpaca.data.historical import StockHistoricalDataClient
         from alpaca.data.requests import StockSnapshotRequest
         from datetime import datetime
+        from shared.symbol_names import get_name
 
         client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
 
-        # Snapshot API: 최신 호가 + 전일 종가를 한 번에 조회
         request = StockSnapshotRequest(symbol_or_symbols=WATCH_SYMBOLS, feed="iex")
         snapshots = client.get_stock_snapshot(request)
 
-        now = datetime.now().strftime("%m/%d %H:%M")
-        lines = [f"Started {now} | {len(WATCH_SYMBOLS)} symbols", ""]
-
+        # 변동률 계산
+        changes = []
         for sym, snap in snapshots.items():
-            # 현재가 (최신 호가의 bid)
             price = float(snap.latest_quote.bid_price) if snap.latest_quote and snap.latest_quote.bid_price else 0
-            if price <= 0:
-                continue
-
-            # 전일 종가
             prev = float(snap.previous_daily_bar.close) if snap.previous_daily_bar else 0
+            if price > 0 and prev > 0:
+                pct = ((price - prev) / prev) * 100
+                changes.append((sym, price, pct))
 
-            if prev > 0:
-                change = ((price - prev) / prev) * 100
-                arrow = "▲" if change >= 0 else "▼"
-                lines.append(f"{sym} ${price:.2f} {arrow}{abs(change):.1f}%")
-            else:
-                lines.append(f"{sym} ${price:.2f}")
+        # 변동성(절대값) 큰 순으로 정렬, 상위 15개
+        changes.sort(key=lambda x: abs(x[2]), reverse=True)
+        top15 = changes[:15]
+
+        now = datetime.now().strftime("%m/%d %H:%M")
+        lines = [f"{now} | {len(WATCH_SYMBOLS)}종목 감시중", ""]
+
+        # 한 줄에 2개씩
+        for i in range(0, len(top15), 2):
+            pair = top15[i:i+2]
+            parts = []
+            for sym, price, pct in pair:
+                arrow = "▲" if pct >= 0 else "▼"
+                name = get_name(sym)
+                parts.append(f"{name} {arrow}{abs(pct):.1f}%")
+            lines.append(" | ".join(parts))
 
         send_push(
             message="\n".join(lines),
             title="Stock Alert - System Online",
-            tags="white_check_mark,satellite",
+            tags="white_check_mark,chart_with_upwards_trend",
             priority=2,
         )
         logger.info("시작 알림 발송 완료")
