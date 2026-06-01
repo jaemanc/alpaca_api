@@ -182,6 +182,9 @@ def main():
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
 
+    # 시작 즉시 알림 발송 (연결 확인용)
+    send_startup_notification()
+
     # 무한 루프: 대기 → 세션 실행 → 대기 → ...
     while not _shutdown:
         # 시장 시작까지 대기 (주말/폐장 후 자동 대기)
