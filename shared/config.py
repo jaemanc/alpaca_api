@@ -9,6 +9,26 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# SSL 검증 우회 (회사 프록시/방화벽 환경에서 self-signed cert 이슈)
+import ssl
+import os
+os.environ["PYTHONHTTPSVERIFY"] = "0"
+os.environ["CURL_CA_BUNDLE"] = ""
+os.environ["REQUESTS_CA_BUNDLE"] = ""
+ssl._create_default_https_context = ssl._create_unverified_context
+
+# urllib3 SSL 경고 억제
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# requests 세션에서 SSL 검증 비활성화 (alpaca-py 내부 호출 포함)
+import requests
+_original_request = requests.Session.request
+def _patched_request(self, *args, **kwargs):
+    kwargs.setdefault("verify", False)
+    return _original_request(self, *args, **kwargs)
+requests.Session.request = _patched_request
+
 # Alpaca API
 ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
 ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")

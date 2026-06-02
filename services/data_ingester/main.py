@@ -149,26 +149,53 @@ def run_session():
     timer = threading.Thread(target=close_timer, daemon=True)
     timer.start()
 
-    # 1시간마다 헬스체크 알림 발송
-    def healthcheck_loop():
+    # 1시간마다 변동성 리포트 발송
+    def hourly_report_loop():
         import time
         while not _shutdown:
-            time.sleep(3600)  # 1시간 대기
+            time.sleep(3600)
             if _shutdown:
                 break
             try:
+                from alpaca.data.historical import StockHistoricalDataClient
+                from alpaca.data.requests import StockSnapshotRequest
+                from shared.symbol_names import get_name
+
+                client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
+                req = StockSnapshotRequest(symbol_or_symbols=WATCH_SYMBOLS, feed="iex")
+                snaps = client.get_stock_snapshot(req)
+
+                changes = []
+                for sym, snap in snaps.items():
+                    price = float(snap.latest_quote.bid_price) if snap.latest_quote and snap.latest_quote.bid_price else 0
+                    prev = float(snap.previous_daily_bar.close) if snap.previous_daily_bar else 0
+                    if price > 0 and prev > 0:
+                        pct = ((price - prev) / prev) * 100
+                        changes.append((sym, price, pct))
+
+                changes.sort(key=lambda x: abs(x[2]), reverse=True)
+                top10 = changes[:10]
+
                 et_now = now_et().strftime("%H:%M ET")
+                lines = [f"{et_now} | {quote_count}건 처리", ""]
+                for i in range(0, len(top10), 2):
+                    pair = top10[i:i+2]
+                    parts = []
+                    for sym, price, pct in pair:
+                        arrow = "▲" if pct >= 0 else "▼"
+                        parts.append(f"{get_name(sym)} {arrow}{abs(pct):.1f}%")
+                    lines.append(" | ".join(parts))
+
                 send_push(
-                    message=f"Running OK | {quote_count} quotes processed\nTime: {et_now}",
-                    title="Stock Alert - Health Check",
-                    tags="green_heart,heartbeat",
+                    message="\n".join(lines),
+                    title="Stock Alert - Hourly Report",
+                    tags="clock1,chart_with_upwards_trend",
                     priority=1,
                 )
-                logger.info(f"헬스체크 발송: {quote_count}건 처리 중")
-            except Exception:
-                pass
-
-    hc_thread = threading.Thread(target=healthcheck_loop, daemon=True)
+                logger.info(f"1시간 리포트 발송: {quote_count}건")
+            except Exception as e:
+                logger.warning(f"리포트 실패: {e}")
+    hc_thread = threading.Thread(target=hourly_report_loop, daemon=True)
     hc_thread.start()
 
     # WebSocket 시작 (블로킹 — 폐장 타이머가 stop() 호출하면 반환됨)
