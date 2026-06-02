@@ -128,10 +128,10 @@ class AlertEngine:
         return True
 
     def _set_cooldowns(self, rule_id: str, symbol: str):
-        """알림 발송 후 모든 쿨다운 설정"""
+        """알림 발송 후 쿨다운 설정"""
         if _use_redis:
             try:
-                set_cooldown(rule_id, "price")
+                set_cooldown(rule_id)
                 set_symbol_cooldown(symbol)
                 return
             except Exception:
