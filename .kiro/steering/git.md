@@ -1,0 +1,1 @@
+../../vendor/harness-playbook/.kiro/steering/git.md

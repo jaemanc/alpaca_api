@@ -1,0 +1,1 @@
+../../vendor/harness-playbook/.kiro/steering/agent-coding-playbook.md
