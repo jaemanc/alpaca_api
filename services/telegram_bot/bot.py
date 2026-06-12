@@ -105,6 +105,13 @@ def main():
         logger.error("TELEGRAM_BOT_TOKEN 미설정")
         sys.exit(1)
 
+    # Python 3.12+ 에서 메인 스레드 이벤트 루프 보장
+    import asyncio
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("list", cmd_list))
