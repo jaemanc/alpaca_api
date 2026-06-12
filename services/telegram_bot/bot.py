@@ -40,7 +40,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """종목 리스트 — 가격+등락률 표시, 클릭 시 그래프"""
+    """종목 리스트 — 한 메시지에 전체 등락률 표시"""
     try:
         from alpaca.data.historical import StockHistoricalDataClient
         from alpaca.data.requests import StockSnapshotRequest
@@ -49,7 +49,7 @@ async def cmd_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
         snaps = client.get_stock_snapshot(StockSnapshotRequest(symbol_or_symbols=WATCH_SYMBOLS, feed="iex"))
 
-        buttons = []
+        lines = ["📊 <b>종목 등락률</b>\n"]
         for sym in WATCH_SYMBOLS:
             snap = snaps.get(sym)
             if not snap or not snap.latest_quote:
@@ -60,32 +60,15 @@ async def cmd_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
             if prev > 0 and price > 0:
                 pct = ((price - prev) / prev) * 100
-                arrow = "▲" if pct >= 0 else "▼"
-                label = f"{name} ${price:.0f} {arrow}{abs(pct):.1f}%"
+                icon = "🔴" if pct >= 0 else "🔵"
+                sign = "+" if pct >= 0 else ""
+                lines.append(f"{icon} {name} ${price:.2f} ({sign}{pct:.1f}%)")
             else:
-                label = f"{name} ${price:.0f}"
+                lines.append(f"⚪ {name} ${price:.2f}")
 
-            buttons.append([InlineKeyboardButton(label, callback_data=f"chart:{sym}")])
-
-        await update.message.reply_text(
-            "종목 클릭 → 3일 변동률 그래프",
-            reply_markup=InlineKeyboardMarkup(buttons),
-        )
+        await update.message.reply_text("\n".join(lines), parse_mode="HTML")
     except Exception as e:
-        # 폴백: 가격 없이 이름만 표시
-        buttons = []
-        row = []
-        for i, sym in enumerate(WATCH_SYMBOLS, 1):
-            row.append(InlineKeyboardButton(get_name(sym), callback_data=f"chart:{sym}"))
-            if i % 3 == 0:
-                buttons.append(row)
-                row = []
-        if row:
-            buttons.append(row)
-        await update.message.reply_text(
-            f"(가격 조회 실패: {e})\n종목 클릭 → 그래프",
-            reply_markup=InlineKeyboardMarkup(buttons),
-        )
+        await update.message.reply_text(f"조회 실패: {e}")
 
 
 async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
