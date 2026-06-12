@@ -18,7 +18,7 @@ from shared.models import Quote
 from shared.kafka_producer import KafkaQuoteProducer
 from services.data_ingester.ingester import DataIngester
 from services.data_ingester.scheduler import wait_for_market, seconds_until_market_close, now_et
-from services.notification.ntfy_sender import send_push
+from services.telegram_bot.notifier import send_message
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger("data_ingester")
@@ -49,12 +49,12 @@ def send_startup_notification():
         changes.sort(key=lambda x: abs(x[2]), reverse=True)
         top = changes[:15]
 
-        lines = [f"{datetime.now().strftime('%m/%d %H:%M')} | {len(WATCH_SYMBOLS)}종목 감시중", ""]
+        lines = [f"📡 시작 {datetime.now().strftime('%m/%d %H:%M')} | {len(WATCH_SYMBOLS)}종목 감시중", ""]
         for i in range(0, len(top), 2):
             pair = top[i:i+2]
             lines.append(" | ".join(f"{get_name(s)} {'▲' if p >= 0 else '▼'}{abs(p):.1f}%" for s, _, p in pair))
 
-        send_push("\n".join(lines), title="Stock Alert - System Online", tags="white_check_mark,chart_with_upwards_trend", priority=2)
+        send_message("\n".join(lines))
         logger.info("시작 알림 발송 완료")
     except Exception as e:
         logger.warning(f"시작 알림 실패: {e}")
@@ -93,12 +93,12 @@ def hourly_report():
             changes.sort(key=lambda x: abs(x[1]), reverse=True)
             top = changes[:10]
 
-            lines = [f"{now_et().strftime('%H:%M ET')} | {quote_count}건 처리", ""]
+            lines = [f"🕐 {now_et().strftime('%H:%M ET')} | {quote_count}건 처리", ""]
             for i in range(0, len(top), 2):
                 pair = top[i:i+2]
                 lines.append(" | ".join(f"{get_name(s)} {'▲' if p >= 0 else '▼'}{abs(p):.1f}%" for s, p in pair))
 
-            send_push("\n".join(lines), title="Stock Alert - Hourly", tags="clock1,chart_with_upwards_trend", priority=1)
+            send_message("\n".join(lines))
         except Exception as e:
             logger.warning(f"리포트 실패: {e}")
 
@@ -127,7 +127,7 @@ def run_session():
     ingester.start()
     producer.flush()
 
-    send_push(f"폐장. 오늘 {quote_count}건 처리.", title="Stock Alert - Closed", tags="zzz,moon", priority=1)
+    send_message(f"🌙 폐장. 오늘 {quote_count}건 처리.")
     logger.info(f"세션 종료. {quote_count}건.")
 
 

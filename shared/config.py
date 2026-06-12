@@ -51,3 +51,9 @@ DAILY_ALERT_LIMIT = 100
 # ntfy
 NTFY_TOPIC_URL = os.getenv("NTFY_TOPIC_URL", "https://ntfy.sh/GirinDev")
 NTFY_TITLE = os.getenv("NTFY_TITLE", "Stock Alert")
+
+# 텔레그램
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
+# 시계열 보관 기간 (일)
+TIMESERIES_RETENTION_DAYS = 3

@@ -1,15 +1,17 @@
-# Alpaca API 연결
+# Alpaca API
 alpaca-py==0.28.1
 python-dotenv==1.0.1
 
 # Kafka
 confluent-kafka==2.6.1
 
-# Redis (4단계에서 사용)
+# Redis
 redis==5.2.1
 
-# 알림 발송
+# HTTP / 스케줄링
 requests>=2.31.0
-
-# 스케줄링
 pytz>=2024.1
+
+# 텔레그램 봇 + 그래프
+python-telegram-bot==21.9
+matplotlib>=3.8

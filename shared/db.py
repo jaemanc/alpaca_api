@@ -45,3 +45,28 @@ def get_updated_date() -> str | None:
     row = conn.execute("SELECT updated_date FROM prev_close LIMIT 1").fetchone()
     conn.close()
     return row[0] if row else None
+
+
+# --- 텔레그램 chat_id 저장 ---
+
+def _ensure_chat_table(conn: sqlite3.Connection):
+    conn.execute("CREATE TABLE IF NOT EXISTS telegram_chats (chat_id TEXT PRIMARY KEY)")
+    conn.commit()
+
+
+def save_chat_id(chat_id: str):
+    """텔레그램 chat_id 등록 (중복 무시)"""
+    conn = _connect()
+    _ensure_chat_table(conn)
+    conn.execute("INSERT OR IGNORE INTO telegram_chats (chat_id) VALUES (?)", (str(chat_id),))
+    conn.commit()
+    conn.close()
+
+
+def get_chat_ids() -> list[str]:
+    """등록된 모든 chat_id 반환"""
+    conn = _connect()
+    _ensure_chat_table(conn)
+    rows = conn.execute("SELECT chat_id FROM telegram_chats").fetchall()
+    conn.close()
+    return [r[0] for r in rows]

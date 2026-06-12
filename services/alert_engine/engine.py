@@ -16,7 +16,7 @@ from confluent_kafka import Consumer, KafkaError
 
 from shared.config import KAFKA_BOOTSTRAP_SERVERS, KAFKA_TOPIC_QUOTES
 from shared.models import Quote
-from services.notification.ntfy_sender import send_price_alert
+from services.telegram_bot.notifier import send_price_alert
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,7 @@ try:
         check_rate_limit,
         check_daily_limit,
         cache_quote,
+        record_timeseries,
         get_redis,
     )
     get_redis().ping()
@@ -153,10 +154,12 @@ class AlertEngine:
 
     def _evaluate(self, quote: Quote):
         """Quote와 규칙 비교 → 4단계 제어 통과 시 알림 발송"""
-        # 시세 캐시
+        # 시세 캐시 + 시계열 기록
         if _use_redis:
             try:
                 cache_quote(quote.symbol, quote.to_json())
+                import time as _t
+                record_timeseries(quote.symbol, quote.bid_price, _t.time())
             except Exception:
                 pass
 

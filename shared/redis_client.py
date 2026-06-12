@@ -9,6 +9,7 @@ from shared.config import (
     REDIS_HOST, REDIS_PORT,
     COOLDOWN_PRICE_ALERT, COOLDOWN_SYMBOL,
     RATE_LIMIT_PER_MINUTE, DAILY_ALERT_LIMIT,
+    TIMESERIES_RETENTION_DAYS,
 )
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,45 @@ def get_redis() -> redis.Redis:
 
 def cache_quote(symbol: str, quote_json: str):
     get_redis().setex(f"quote:{symbol}", 60, quote_json)
+
+
+def get_cached_quote(symbol: str) -> str | None:
+    """캐시된 시세 조회 (없으면 None)"""
+    return get_redis().get(f"quote:{symbol}")
+
+
+# --- 3일치 시계열 (분당 1포인트) ---
+
+def record_timeseries(symbol: str, price: float, ts_epoch: float):
+    """
+    시세 시계열 기록 (Sorted Set, score=epoch초).
+
+    분당 1포인트만 저장하고, 3일 이전 데이터는 자동 삭제한다.
+    member 형식: "epoch:price" (중복 방지를 위해 분 단위로 버킷팅).
+    """
+    r = get_redis()
+    key = f"ts:{symbol}"
+    minute_bucket = int(ts_epoch // 60) * 60  # 분 단위로 내림
+    member = f"{minute_bucket}:{price}"
+
+    # 같은 분 버킷의 기존 포인트 제거 후 갱신 (분당 1포인트 보장)
+    r.zremrangebyscore(key, minute_bucket, minute_bucket)
+    r.zadd(key, {member: minute_bucket})
+
+    # 3일 이전 데이터 삭제
+    cutoff = ts_epoch - TIMESERIES_RETENTION_DAYS * 86400
+    r.zremrangebyscore(key, 0, cutoff)
+
+
+def get_timeseries(symbol: str) -> list[tuple[float, float]]:
+    """시계열 조회 → [(epoch, price), ...] 시간순 정렬"""
+    r = get_redis()
+    raw = r.zrange(f"ts:{symbol}", 0, -1)
+    result = []
+    for m in raw:
+        epoch_str, price_str = m.split(":", 1)
+        result.append((float(epoch_str), float(price_str)))
+    return result
 
 
 # --- 쿨다운 ---
