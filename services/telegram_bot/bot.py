@@ -23,7 +23,6 @@ from shared.db import save_chat_id
 from shared.symbol_names import get_name, find_symbol
 from shared.redis_client import get_cached_quote
 from shared.models import Quote
-from services.telegram_bot.chart import build_chart
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger("telegram_bot")
@@ -41,25 +40,56 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """감시 종목을 인라인 버튼으로 표시 (한 줄에 3개)"""
-    buttons = []
-    row = []
-    for i, sym in enumerate(WATCH_SYMBOLS, 1):
-        row.append(InlineKeyboardButton(get_name(sym), callback_data=f"chart:{sym}"))
-        if i % 3 == 0:
-            buttons.append(row)
-            row = []
-    if row:
-        buttons.append(row)
+    """종목 리스트 — 가격+등락률 표시, 클릭 시 그래프"""
+    try:
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockSnapshotRequest
+        from shared.config import ALPACA_API_KEY, ALPACA_SECRET_KEY
 
-    await update.message.reply_text(
-        "종목을 선택하면 3일치 변동률 그래프를 보여드립니다:",
-        reply_markup=InlineKeyboardMarkup(buttons),
-    )
+        client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
+        snaps = client.get_stock_snapshot(StockSnapshotRequest(symbol_or_symbols=WATCH_SYMBOLS, feed="iex"))
+
+        buttons = []
+        for sym in WATCH_SYMBOLS:
+            snap = snaps.get(sym)
+            if not snap or not snap.latest_quote:
+                continue
+            price = float(snap.latest_quote.bid_price or 0)
+            prev = float(snap.previous_daily_bar.close) if snap.previous_daily_bar else 0
+            name = get_name(sym)
+
+            if prev > 0 and price > 0:
+                pct = ((price - prev) / prev) * 100
+                arrow = "▲" if pct >= 0 else "▼"
+                label = f"{name} ${price:.0f} {arrow}{abs(pct):.1f}%"
+            else:
+                label = f"{name} ${price:.0f}"
+
+            buttons.append([InlineKeyboardButton(label, callback_data=f"chart:{sym}")])
+
+        await update.message.reply_text(
+            "종목 클릭 → 3일 변동률 그래프",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+    except Exception as e:
+        # 폴백: 가격 없이 이름만 표시
+        buttons = []
+        row = []
+        for i, sym in enumerate(WATCH_SYMBOLS, 1):
+            row.append(InlineKeyboardButton(get_name(sym), callback_data=f"chart:{sym}"))
+            if i % 3 == 0:
+                buttons.append(row)
+                row = []
+        if row:
+            buttons.append(row)
+        await update.message.reply_text(
+            f"(가격 조회 실패: {e})\n종목 클릭 → 그래프",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
 
 
 async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """버튼 클릭 → 3일 그래프 전송"""
+    """버튼 클릭 → 등락률 + 가격 텍스트"""
     query = update.callback_query
     await query.answer()
 
@@ -67,17 +97,38 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     symbol = query.data.split(":", 1)[1]
-    png = build_chart(symbol)
 
-    if png is None:
-        await query.message.reply_text(f"{get_name(symbol)}({symbol}) — 아직 그래프를 그릴 데이터가 부족합니다.")
-        return
+    try:
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockSnapshotRequest
+        from shared.config import ALPACA_API_KEY, ALPACA_SECRET_KEY
 
-    await ctx.bot.send_photo(
-        chat_id=query.message.chat_id,
-        photo=png,
-        caption=f"{get_name(symbol)}({symbol}) 3일 변동률",
-    )
+        client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
+        snaps = client.get_stock_snapshot(StockSnapshotRequest(symbol_or_symbols=[symbol], feed="iex"))
+        snap = snaps.get(symbol)
+
+        if snap and snap.latest_quote:
+            price = float(snap.latest_quote.bid_price or 0)
+            prev = float(snap.previous_daily_bar.close) if snap.previous_daily_bar else 0
+            name = get_name(symbol)
+
+            if prev > 0 and price > 0:
+                pct = ((price - prev) / prev) * 100
+                arrow = "📈" if pct >= 0 else "📉"
+                text = (
+                    f"{arrow} {name} ({symbol})\n"
+                    f"현재가: ${price:.2f}\n"
+                    f"전일종가: ${prev:.2f}\n"
+                    f"등락률: {'+'if pct>=0 else ''}{pct:.2f}%"
+                )
+            else:
+                text = f"{name} ({symbol})\n현재가: ${price:.2f}"
+        else:
+            text = f"{symbol} — 데이터 없음"
+    except Exception as e:
+        text = f"{symbol} — 조회 실패: {e}"
+
+    await query.message.reply_text(text)
 
 
 async def cmd_price(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -91,25 +142,12 @@ async def cmd_price(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """
-    자연어 메시지 처리
-
-    "애플 시세 알려줘", "테슬라 얼마야", "NVDA" 등을 인식한다.
-    """
+    """자연어 메시지 → 종목 등락률 텍스트"""
     text = update.message.text
     symbol = find_symbol(text)
 
     if symbol:
-        # 그래프 데이터가 있으면 그래프도 전송
-        png = build_chart(symbol)
-        if png:
-            await ctx.bot.send_photo(
-                chat_id=update.effective_chat.id,
-                photo=png,
-                caption=f"{get_name(symbol)}({symbol}) 3일 변동률",
-            )
-        else:
-            await _reply_price(update, symbol)
+        await _reply_price(update, symbol)
     else:
         await update.message.reply_text(
             "종목을 찾지 못했습니다.\n"

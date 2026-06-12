@@ -40,21 +40,40 @@ def backfill():
     now = datetime.now(timezone.utc)
 
     for sym, snap in snaps.items():
-        # 전일 종가 → 어제 16:00 ET 기준 시각으로 기록
+        prev_close = 0
+        daily_close = 0
+        latest = 0
+
         if snap.previous_daily_bar:
-            prev_ts = (now - timedelta(days=1)).replace(hour=20, minute=0).timestamp()
-            record_timeseries(sym, float(snap.previous_daily_bar.close), prev_ts)
+            prev_close = float(snap.previous_daily_bar.close)
+        if snap.daily_bar:
+            daily_close = float(snap.daily_bar.close)
+        if snap.latest_quote and snap.latest_quote.bid_price:
+            latest = float(snap.latest_quote.bid_price)
+
+        # 전일 종가 → 어제 20:00 UTC (16:00 ET) 기준
+        if prev_close > 0:
+            prev_ts = (now - timedelta(days=1)).replace(hour=20, minute=0, second=0).timestamp()
+            record_timeseries(sym, prev_close, prev_ts)
             total += 1
 
-        # 당일 일봉 (마지막 종가 또는 현재 시세)
-        if snap.daily_bar:
-            daily_ts = now.replace(hour=14, minute=0).timestamp()
-            record_timeseries(sym, float(snap.daily_bar.close), daily_ts)
-            total += 1
+            # 전일 → 당일 사이를 5분 간격으로 보간 (시가~종가 사이 자연스러운 곡선)
+            if daily_close > 0:
+                # 당일 장 시작(14:30 UTC = 09:30 ET)부터 종료(21:00 UTC = 16:00 ET)까지
+                open_ts = now.replace(hour=14, minute=30, second=0).timestamp()
+                close_ts = now.replace(hour=21, minute=0, second=0).timestamp()
+                # 5분 간격 보간 (선형)
+                steps = int((close_ts - open_ts) / 300)
+                for i in range(steps + 1):
+                    t = open_ts + i * 300
+                    ratio = i / max(steps, 1)
+                    price = prev_close + (daily_close - prev_close) * ratio
+                    record_timeseries(sym, price, t)
+                    total += 1
 
         # 최신 호가
-        if snap.latest_quote and snap.latest_quote.bid_price:
-            record_timeseries(sym, float(snap.latest_quote.bid_price), now.timestamp())
+        if latest > 0:
+            record_timeseries(sym, latest, now.timestamp())
             total += 1
 
     logger.info(f"적재 완료: {total}건 ({len(snaps)}종목)")

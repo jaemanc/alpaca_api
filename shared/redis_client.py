@@ -35,21 +35,18 @@ def get_cached_quote(symbol: str) -> str | None:
 
 def record_timeseries(symbol: str, price: float, ts_epoch: float):
     """
-    시세 시계열 기록 (Sorted Set, score=epoch초).
+    시계열 기록 (5분 버킷).
 
-    분당 1포인트만 저장하고, 3일 이전 데이터는 자동 삭제한다.
-    member 형식: "epoch:price" (중복 방지를 위해 분 단위로 버킷팅).
+    5분 단위로 샘플링하고, 3일 이전 데이터는 자동 삭제.
     """
     r = get_redis()
     key = f"ts:{symbol}"
-    minute_bucket = int(ts_epoch // 60) * 60  # 분 단위로 내림
-    member = f"{minute_bucket}:{price}"
+    bucket = int(ts_epoch // 300) * 300  # 5분 단위로 내림
 
-    # 같은 분 버킷의 기존 포인트 제거 후 갱신 (분당 1포인트 보장)
-    r.zremrangebyscore(key, minute_bucket, minute_bucket)
-    r.zadd(key, {member: minute_bucket})
+    r.zremrangebyscore(key, bucket, bucket)
+    r.zadd(key, {f"{bucket}:{price}": bucket})
 
-    # 3일 이전 데이터 삭제
+    # 3일 이전 삭제
     cutoff = ts_epoch - TIMESERIES_RETENTION_DAYS * 86400
     r.zremrangebyscore(key, 0, cutoff)
 
